@@ -42,7 +42,6 @@ func printHelp() {
       -x <value>           Initial X position of the widget (origin at bottom-left)
       -y <value>           Initial Y position of the widget (origin at bottom-left)
       -w, --width <value>  Initial width of the widget
-      --id <id>            Start widget with a specific ID (for running multiple widgets)
       --reset              Clear saved settings and start fresh
     
     Interacting with Locked Widget:
@@ -107,14 +106,6 @@ func parseArguments() -> Config {
                 print("Error: Missing or invalid value for --width")
                 exit(1)
             }
-        case "--id":
-            if idx + 1 < args.count {
-                config.widgetId = args[idx + 1]
-                idx += 2
-            } else {
-                print("Error: Missing value after --id")
-                exit(1)
-            }
         case "--reset":
             config.shouldReset = true
             idx += 1
@@ -133,18 +124,20 @@ func parseArguments() -> Config {
 }
 
 globalConfig = parseArguments()
-if let id = globalConfig.widgetId {
-    widgetId = id
-}
 
 class DragImageView: NSImageView {
-    weak var windowRef: NSWindow?
+    weak var windowRef: WidgetWindow?
+    var widgetId: String = "default"
     
     var isLocked: Bool = false {
         didSet {
             UserDefaults.standard.set(isLocked, forKey: getPrefKey("isLocked"))
             updateWindowProperties()
         }
+    }
+    
+    func getPrefKey(_ key: String) -> String {
+        return "\(key)_\(widgetId)"
     }
     
     func updateWindowProperties() {
@@ -275,26 +268,14 @@ class DragImageView: NSImageView {
     
     @objc func chooseFile() {
         if let appDelegate = NSApp.delegate as? AppDelegate {
-            appDelegate.showOpenPanel()
+            appDelegate.showOpenPanel(for: widgetId)
         }
     }
     
     @objc func createNewWidget() {
-        let newId = String(Int(Date().timeIntervalSince1970))
-        let exePath = Bundle.main.executablePath ?? CommandLine.arguments[0]
-        
-        // Add newId to active widget IDs list
-        var activeIds = UserDefaults.standard.stringArray(forKey: "activeWidgetIDs") ?? ["default"]
-        if !activeIds.contains(newId) {
-            activeIds.append(newId)
-            UserDefaults.standard.set(activeIds, forKey: "activeWidgetIDs")
+        if let appDelegate = NSApp.delegate as? AppDelegate {
+            appDelegate.createNewWidgetWindow()
         }
-        
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: exePath)
-        process.arguments = ["--id", newId]
-        
-        try? process.run()
     }
     
     @objc func increaseSize() {
@@ -363,36 +344,23 @@ class DragImageView: NSImageView {
     }
     
     @objc func quitApp() {
-        // Remove this widget from active IDs list if not default
-        if widgetId != "default" {
-            var activeIds = UserDefaults.standard.stringArray(forKey: "activeWidgetIDs") ?? ["default"]
-            if let index = activeIds.firstIndex(of: widgetId) {
-                activeIds.remove(at: index)
-                UserDefaults.standard.set(activeIds, forKey: "activeWidgetIDs")
-            }
+        if let appDelegate = NSApp.delegate as? AppDelegate {
+            appDelegate.closeWidgetWindow(id: widgetId)
         }
-        NSApp.terminate(nil)
     }
     
     @objc func quitAllApp() {
-        // Reset active IDs list to just default
-        UserDefaults.standard.set(["default"], forKey: "activeWidgetIDs")
-        
-        let currentPid = ProcessInfo.processInfo.processIdentifier
-        let runningApps = NSWorkspace.shared.runningApplications
-        for app in runningApps {
-            if app.bundleIdentifier == Bundle.main.bundleIdentifier || app.localizedName == "gifwidget" {
-                if app.processIdentifier != currentPid {
-                    app.terminate()
-                }
-            }
+        if let appDelegate = NSApp.delegate as? AppDelegate {
+            appDelegate.closeAllWidgetWindows()
         }
-        NSApp.terminate(nil)
     }
 }
 
 class WidgetWindow: NSWindow {
-    init(contentRect: NSRect) {
+    var widgetId: String = ""
+    
+    init(contentRect: NSRect, widgetId: String) {
+        self.widgetId = widgetId
         super.init(
             contentRect: contentRect,
             styleMask: [.borderless, .resizable],
@@ -409,8 +377,7 @@ class WidgetWindow: NSWindow {
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    var window: WidgetWindow?
-    var imageView: DragImageView?
+    var widgetWindows: [String: WidgetWindow] = [:]
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -427,21 +394,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             UserDefaults.standard.set(["default"], forKey: "activeWidgetIDs")
         }
         
-        // In default instance, launch other saved instances
-        if widgetId == "default" && !globalConfig.shouldReset {
-            let activeIds = UserDefaults.standard.stringArray(forKey: "activeWidgetIDs") ?? ["default"]
-            let exePath = Bundle.main.executablePath ?? CommandLine.arguments[0]
-            for id in activeIds {
-                if id != "default" {
-                    let process = Process()
-                    process.executableURL = URL(fileURLWithPath: exePath)
-                    process.arguments = ["--id", id]
-                    try? process.run()
-                }
-            }
+        // Load all active widgets in this single process
+        let activeIds = UserDefaults.standard.stringArray(forKey: "activeWidgetIDs") ?? ["default"]
+        for id in activeIds {
+            createWidgetWindow(id: id, isInitialLaunch: true)
         }
-        
-        // Determine initial frame
+    }
+    
+    func createWidgetWindow(id: String, isInitialLaunch: Bool = false) {
         let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 800, height: 600)
         let defaultWidth: CGFloat = 300
         let defaultHeight: CGFloat = 300
@@ -453,21 +413,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             height: defaultHeight
         )
         
-        // Load saved frame (unless --reset was requested)
-        if !globalConfig.shouldReset, let frameString = UserDefaults.standard.string(forKey: getPrefKey("windowFrame")) {
+        let frameKey = "windowFrame_\(id)"
+        if !globalConfig.shouldReset, let frameString = UserDefaults.standard.string(forKey: frameKey) {
             rect = NSRectFromString(frameString)
         }
         
-        // Override with command-line coordinates/size if specified
-        if let w = globalConfig.width {
-            rect.size.width = w
-            rect.size.height = w
-        }
-        if let x = globalConfig.x {
-            rect.origin.x = x
-        }
-        if let y = globalConfig.y {
-            rect.origin.y = y
+        // Apply CLI overrides only to the default widget during initial launch
+        if id == "default" && isInitialLaunch {
+            if let w = globalConfig.width {
+                rect.size.width = w
+                rect.size.height = w
+            }
+            if let x = globalConfig.x {
+                rect.origin.x = x
+            }
+            if let y = globalConfig.y {
+                rect.origin.y = y
+            }
         }
         
         // Validate coordinates are on screen
@@ -483,57 +445,72 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             rect.origin.y = screenFrame.origin.y + (screenFrame.height - rect.height) / 2
         }
         
-        let win = WidgetWindow(contentRect: rect)
+        let win = WidgetWindow(contentRect: rect, widgetId: id)
         win.delegate = self
         win.makeKeyAndOrderFront(nil)
-        self.window = win
+        widgetWindows[id] = win
         
         let view = DragImageView(frame: win.contentView!.bounds)
         view.autoresizingMask = [.width, .height]
         view.imageScaling = .scaleProportionallyUpOrDown
         view.animates = true
         view.windowRef = win
+        view.widgetId = id
         win.contentView?.addSubview(view)
-        self.imageView = view
         
-        // Restore/Set opacity
-        if let cliOpacity = globalConfig.opacity {
+        // Set opacity
+        let opacityKey = "opacity_\(id)"
+        if id == "default" && isInitialLaunch, let cliOpacity = globalConfig.opacity {
             win.alphaValue = CGFloat(cliOpacity)
-            UserDefaults.standard.set(cliOpacity, forKey: getPrefKey("opacity"))
+            UserDefaults.standard.set(cliOpacity, forKey: opacityKey)
         } else {
-            let savedOpacity = UserDefaults.standard.double(forKey: getPrefKey("opacity"))
+            let savedOpacity = UserDefaults.standard.double(forKey: opacityKey)
             if savedOpacity > 0 {
                 win.alphaValue = CGFloat(savedOpacity)
             }
         }
         
-        // Restore/Set lock state
-        let savedLock = UserDefaults.standard.bool(forKey: getPrefKey("isLocked"))
-        let targetLock = globalConfig.isLocked ?? savedLock
+        // Set lock state
+        let lockKey = "isLocked_\(id)"
+        let savedLock = UserDefaults.standard.bool(forKey: lockKey)
+        let targetLock = (id == "default" && isInitialLaunch) ? (globalConfig.isLocked ?? savedLock) : savedLock
         
         // Load image
-        if let cliPath = globalConfig.imagePath {
-            loadImage(from: cliPath)
+        let imageKey = "imagePath_\(id)"
+        if id == "default" && isInitialLaunch, let cliPath = globalConfig.imagePath {
+            loadImage(for: win, view: view, from: cliPath)
             view.isLocked = targetLock
-        } else if let savedPath = UserDefaults.standard.string(forKey: getPrefKey("imagePath")), !globalConfig.shouldReset {
-            loadImage(from: savedPath)
+        } else if let savedPath = UserDefaults.standard.string(forKey: imageKey), !globalConfig.shouldReset {
+            loadImage(for: win, view: view, from: savedPath)
             view.isLocked = targetLock
         } else {
             DispatchQueue.main.async {
-                self.showOpenPanel()
+                self.showOpenPanel(for: id)
                 view.isLocked = targetLock
             }
         }
     }
     
-    func loadImage(from path: String) {
+    func createNewWidgetWindow() {
+        let newId = String(Int(Date().timeIntervalSince1970))
+        var activeIds = UserDefaults.standard.stringArray(forKey: "activeWidgetIDs") ?? ["default"]
+        if !activeIds.contains(newId) {
+            activeIds.append(newId)
+            UserDefaults.standard.set(activeIds, forKey: "activeWidgetIDs")
+        }
+        createWidgetWindow(id: newId)
+    }
+    
+    func loadImage(for win: WidgetWindow, view: DragImageView, from path: String) {
         let expandedPath = NSString(string: path).expandingTildeInPath
         if let image = NSImage(contentsOfFile: expandedPath) {
-            imageView?.image = image
-            UserDefaults.standard.set(expandedPath, forKey: getPrefKey("imagePath"))
+            view.image = image
+            let imageKey = "imagePath_\(win.widgetId)"
+            UserDefaults.standard.set(expandedPath, forKey: imageKey)
             
-            if UserDefaults.standard.string(forKey: getPrefKey("windowFrame")) == nil || globalConfig.width != nil {
-                adjustWindowSize(for: image)
+            let frameKey = "windowFrame_\(win.widgetId)"
+            if UserDefaults.standard.string(forKey: frameKey) == nil || (win.widgetId == "default" && globalConfig.width != nil) {
+                adjustWindowSize(for: win, image: image)
             }
         } else {
             let alert = NSAlert()
@@ -542,22 +519,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             alert.alertStyle = .warning
             alert.runModal()
             
-            if imageView?.image == nil {
-                showOpenPanel()
+            if view.image == nil {
+                showOpenPanel(for: win.widgetId)
             }
         }
     }
     
-    func adjustWindowSize(for image: NSImage) {
-        guard let window = self.window else { return }
+    func adjustWindowSize(for win: WidgetWindow, image: NSImage) {
         let size = image.size
         if size.width > 0 && size.height > 0 {
             let aspectRatio = size.width / size.height
-            let currentFrame = window.frame
+            let currentFrame = win.frame
             let targetWidth = currentFrame.width
             let targetHeight = targetWidth / aspectRatio
             
-            window.setFrame(
+            win.setFrame(
                 NSRect(
                     x: currentFrame.origin.x,
                     y: currentFrame.origin.y + (currentFrame.height - targetHeight),
@@ -570,7 +546,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
     
-    func showOpenPanel() {
+    func showOpenPanel(for id: String) {
+        guard let win = widgetWindows[id],
+              let view = win.contentView?.subviews.first(where: { $0 is DragImageView }) as? DragImageView else {
+            return
+        }
+        
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
@@ -580,26 +561,57 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         
         panel.begin { response in
             if response == .OK, let url = panel.url {
-                self.loadImage(from: url.path)
-            } else if self.imageView?.image == nil {
-                NSApp.terminate(nil)
+                self.loadImage(for: win, view: view, from: url.path)
+            } else if view.image == nil {
+                self.closeWidgetWindow(id: id)
             }
         }
     }
     
+    func closeWidgetWindow(id: String) {
+        guard let win = widgetWindows[id] else { return }
+        win.close()
+        widgetWindows.removeValue(forKey: id)
+        
+        if id != "default" {
+            var activeIds = UserDefaults.standard.stringArray(forKey: "activeWidgetIDs") ?? ["default"]
+            if let index = activeIds.firstIndex(of: id) {
+                activeIds.remove(at: index)
+                UserDefaults.standard.set(activeIds, forKey: "activeWidgetIDs")
+            }
+        }
+        
+        // If no windows left, quit the app
+        if widgetWindows.isEmpty {
+            NSApp.terminate(nil)
+        }
+    }
+    
+    func closeAllWidgetWindows() {
+        UserDefaults.standard.set(["default"], forKey: "activeWidgetIDs")
+        for win in widgetWindows.values {
+            win.close()
+        }
+        widgetWindows.removeAll()
+        NSApp.terminate(nil)
+    }
+    
     // MARK: NSWindowDelegate methods to persist frame
     func windowDidMove(_ notification: Notification) {
-        saveWindowFrame()
+        if let win = notification.object as? WidgetWindow {
+            saveWindowFrame(for: win)
+        }
     }
     
     func windowDidResize(_ notification: Notification) {
-        saveWindowFrame()
+        if let win = notification.object as? WidgetWindow {
+            saveWindowFrame(for: win)
+        }
     }
     
-    func saveWindowFrame() {
-        if let frame = window?.frame {
-            UserDefaults.standard.set(NSStringFromRect(frame), forKey: getPrefKey("windowFrame"))
-        }
+    func saveWindowFrame(for win: WidgetWindow) {
+        let frameKey = "windowFrame_\(win.widgetId)"
+        UserDefaults.standard.set(NSStringFromRect(win.frame), forKey: frameKey)
     }
 }
 
