@@ -45,7 +45,7 @@ func printHelp() {
     
     Managing Locked Widget:
       Hold Command (Cmd / ⌘) to temporarily raise locked widgets above desktop icons
-      for dragging or right-clicking. Or use the Menu Bar menu.
+      for dragging or right-clicking.
     """)
 }
 
@@ -133,7 +133,6 @@ class DragImageView: NSImageView {
         didSet {
             UserDefaults.standard.set(isLocked, forKey: getPrefKey("isLocked"))
             updateWindowProperties()
-            (NSApp.delegate as? AppDelegate)?.updateMenuBarMenu()
         }
     }
     
@@ -342,7 +341,6 @@ class DragImageView: NSImageView {
         let alpha = CGFloat(sender.tag) / 100.0
         windowRef?.alphaValue = alpha
         UserDefaults.standard.set(Double(alpha), forKey: getPrefKey("opacity"))
-        (NSApp.delegate as? AppDelegate)?.updateMenuBarMenu()
     }
     
     @objc func quitApp() {
@@ -380,7 +378,6 @@ class WidgetWindow: NSWindow {
 
 class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var widgetWindows: [String: WidgetWindow] = [:]
-    var statusItem: NSStatusItem?
     var modifierTimer: Timer?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -398,26 +395,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             UserDefaults.standard.set(["default"], forKey: "activeWidgetIDs")
         }
         
-        setupMenuBar()
         startModifierTimer()
         
         // Load all active widgets
         let activeIds = UserDefaults.standard.stringArray(forKey: "activeWidgetIDs") ?? ["default"]
         for id in activeIds {
             createWidgetWindow(id: id, isInitialLaunch: true)
-        }
-        
-        updateMenuBarMenu()
-    }
-    
-    func setupMenuBar() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if let button = statusItem?.button {
-            if #available(macOS 11.0, *) {
-                button.image = NSImage(systemSymbolName: "photo.on.rectangle.angled", accessibilityDescription: "gifwidget")
-            } else {
-                button.title = "🖼️"
-            }
         }
     }
     
@@ -448,179 +431,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
             }
         }
-    }
-    
-    func updateMenuBarMenu() {
-        let menu = NSMenu()
-        
-        let newItem = NSMenuItem(title: "New Widget", action: #selector(menuBarNewWidget), keyEquivalent: "n")
-        newItem.target = self
-        menu.addItem(newItem)
-        
-        menu.addItem(NSMenuItem.separator())
-        
-        let headerItem = NSMenuItem(title: "Active Widgets:", action: nil, keyEquivalent: "")
-        headerItem.isEnabled = false
-        menu.addItem(headerItem)
-        
-        for (id, win) in widgetWindows {
-            let view = win.contentView?.subviews.first(where: { $0 is DragImageView }) as? DragImageView
-            let isLocked = view?.isLocked ?? false
-            
-            let widgetMenu = NSMenu()
-            
-            // Lock/Unlock
-            let lockItem = NSMenuItem(title: isLocked ? "Unlock" : "Lock", action: #selector(menuBarToggleLock(_:)), keyEquivalent: "")
-            lockItem.target = self
-            lockItem.representedObject = id
-            if #available(macOS 11.0, *) {
-                lockItem.image = NSImage(systemSymbolName: isLocked ? "lock.open.fill" : "lock.fill", accessibilityDescription: nil)
-            }
-            widgetMenu.addItem(lockItem)
-            
-            // Choose image
-            let chooseItem = NSMenuItem(title: "Choose image/GIF...", action: #selector(menuBarChooseFile(_:)), keyEquivalent: "")
-            chooseItem.target = self
-            chooseItem.representedObject = id
-            widgetMenu.addItem(chooseItem)
-            
-            // Size Submenu
-            let sizeMenu = NSMenu()
-            let sizes = [
-                ("Increase (+)", #selector(menuBarIncreaseSize(_:))),
-                ("Decrease (-)", #selector(menuBarDecreaseSize(_:))),
-                ("Reset Size", #selector(menuBarResetSize(_:)))
-            ]
-            for (title, action) in sizes {
-                let sItem = NSMenuItem(title: title, action: action, keyEquivalent: "")
-                sItem.target = self
-                sItem.representedObject = id
-                if #available(macOS 11.0, *) {
-                    let iconName = title.hasPrefix("Increase") ? "plus" : (title.hasPrefix("Decrease") ? "minus" : "arrow.counterclockwise")
-                    sItem.image = NSImage(systemSymbolName: iconName, accessibilityDescription: nil)
-                }
-                sizeMenu.addItem(sItem)
-            }
-            let sizeParent = NSMenuItem(title: "Size", action: nil, keyEquivalent: "")
-            sizeParent.submenu = sizeMenu
-            widgetMenu.addItem(sizeParent)
-            
-            // Opacity Submenu
-            let opacityMenu = NSMenu()
-            let opacities = [100, 90, 80, 70, 60, 50, 40, 30, 20]
-            for percent in opacities {
-                let opItem = NSMenuItem(title: "\(percent)%", action: #selector(menuBarSetOpacity(_:)), keyEquivalent: "")
-                opItem.target = self
-                opItem.tag = percent
-                opItem.representedObject = id
-                let currentPercent = Int(round(win.alphaValue * 100))
-                if abs(currentPercent - percent) <= 2 {
-                    opItem.state = .on
-                }
-                opacityMenu.addItem(opItem)
-            }
-            let opacityParent = NSMenuItem(title: "Opacity", action: nil, keyEquivalent: "")
-            opacityParent.submenu = opacityMenu
-            widgetMenu.addItem(opacityParent)
-            
-            widgetMenu.addItem(NSMenuItem.separator())
-            
-            // Close widget
-            let closeItem = NSMenuItem(title: "Close Widget", action: #selector(menuBarCloseWidget(_:)), keyEquivalent: "")
-            closeItem.target = self
-            closeItem.representedObject = id
-            widgetMenu.addItem(closeItem)
-            
-            // Retrieve image file name for menu title
-            var displayName = "Widget (\(id))"
-            if let imgPath = UserDefaults.standard.string(forKey: "imagePath_\(id)") {
-                displayName = (imgPath as NSString).lastPathComponent
-                if displayName.count > 22 {
-                    displayName = String(displayName.prefix(19)) + "..."
-                }
-            }
-            
-            let widgetParent = NSMenuItem(title: displayName, action: nil, keyEquivalent: "")
-            widgetParent.submenu = widgetMenu
-            menu.addItem(widgetParent)
-        }
-        
-        menu.addItem(NSMenuItem.separator())
-        
-        let quitAllItem = NSMenuItem(title: "Quit gifwidget", action: #selector(menuBarQuitAll), keyEquivalent: "q")
-        quitAllItem.target = self
-        menu.addItem(quitAllItem)
-        
-        statusItem?.menu = menu
-    }
-    
-    // MARK: Menu Bar Actions
-    @objc func menuBarNewWidget() {
-        createNewWidgetWindow()
-        updateMenuBarMenu()
-    }
-    
-    @objc func menuBarToggleLock(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String,
-              let win = widgetWindows[id],
-              let view = win.contentView?.subviews.first(where: { $0 is DragImageView }) as? DragImageView else {
-            return
-        }
-        view.isLocked = !view.isLocked
-        updateMenuBarMenu()
-    }
-    
-    @objc func menuBarChooseFile(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String else { return }
-        showOpenPanel(for: id)
-    }
-    
-    @objc func menuBarCloseWidget(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String else { return }
-        closeWidgetWindow(id: id)
-        updateMenuBarMenu()
-    }
-    
-    @objc func menuBarIncreaseSize(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String,
-              let win = widgetWindows[id],
-              let view = win.contentView?.subviews.first(where: { $0 is DragImageView }) as? DragImageView else {
-            return
-        }
-        view.increaseSize()
-    }
-    
-    @objc func menuBarDecreaseSize(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String,
-              let win = widgetWindows[id],
-              let view = win.contentView?.subviews.first(where: { $0 is DragImageView }) as? DragImageView else {
-            return
-        }
-        view.decreaseSize()
-    }
-    
-    @objc func menuBarResetSize(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String,
-              let win = widgetWindows[id],
-              let view = win.contentView?.subviews.first(where: { $0 is DragImageView }) as? DragImageView else {
-            return
-        }
-        view.resetSize()
-    }
-    
-    @objc func menuBarSetOpacity(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String,
-              let win = widgetWindows[id] else {
-            return
-        }
-        let alpha = CGFloat(sender.tag) / 100.0
-        win.alphaValue = alpha
-        UserDefaults.standard.set(Double(alpha), forKey: "opacity_\(id)")
-        updateMenuBarMenu()
-    }
-    
-    @objc func menuBarQuitAll() {
-        closeAllWidgetWindows()
     }
     
     func createWidgetWindow(id: String, isInitialLaunch: Bool = false) {
@@ -734,7 +544,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if UserDefaults.standard.string(forKey: frameKey) == nil || (win.widgetId == "default" && globalConfig.width != nil) {
                 adjustWindowSize(for: win, image: image)
             }
-            updateMenuBarMenu()
         } else {
             let alert = NSAlert()
             alert.messageText = "Failed to load image"
@@ -804,8 +613,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
         
-        updateMenuBarMenu()
-        
         // If no windows left, quit the app
         if widgetWindows.isEmpty {
             NSApp.terminate(nil)
@@ -813,7 +620,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     
     func closeAllWidgetWindows() {
-        UserDefaults.standard.set(["default"], forKey: "activeWidgetIDs")
+        // Just close and terminate without clearing activeWidgetIDs
         for win in widgetWindows.values {
             win.close()
         }
