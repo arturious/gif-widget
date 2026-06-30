@@ -7,6 +7,115 @@ extension NSWindow.Level {
     static let desktop = NSWindow.Level(rawValue: NSWindow.Level.normal.rawValue - 1)
 }
 
+struct Config {
+    var imagePath: String?
+    var opacity: Double?
+    var isLocked: Bool?
+    var x: CGFloat?
+    var y: CGFloat?
+    var width: CGFloat?
+    var shouldReset = false
+}
+
+func printHelp() {
+    print("""
+    gifwidget - Lightweight desktop GIF and image widget for macOS
+    
+    Usage:
+      gifwidget [options] [image_path]
+    
+    Options:
+      -h, --help           Show this help message and exit
+      -p, --path <path>    Path to the GIF or image file
+      -o, --opacity <val>  Opacity level (0.2 to 1.0, e.g. 0.8)
+      -l, --lock           Start in locked mode (click-through, below windows)
+      -u, --unlock         Start in unlocked mode (draggable, normal window level)
+      -x <value>           Initial X position of the widget (origin at bottom-left)
+      -y <value>           Initial Y position of the widget (origin at bottom-left)
+      -w, --width <value>  Initial width of the widget
+      --reset              Clear saved settings and start fresh
+    
+    Interacting with Locked Widget:
+      Hold the Command (Cmd / ⌘) key while dragging or right-clicking to move/unlock.
+    """)
+}
+
+func parseArguments() -> Config {
+    let args = CommandLine.arguments
+    var config = Config()
+    
+    var idx = 1
+    while idx < args.count {
+        let arg = args[idx]
+        switch arg {
+        case "-h", "--help":
+            printHelp()
+            exit(0)
+        case "-p", "--path":
+            if idx + 1 < args.count {
+                config.imagePath = args[idx + 1]
+                idx += 2
+            } else {
+                print("Error: Missing path after \(arg)")
+                exit(1)
+            }
+        case "-o", "--opacity":
+            if idx + 1 < args.count, let val = Double(args[idx + 1]), val >= 0.2, val <= 1.0 {
+                config.opacity = val
+                idx += 2
+            } else {
+                print("Error: Opacity must be a number between 0.2 and 1.0")
+                exit(1)
+            }
+        case "-l", "--lock":
+            config.isLocked = true
+            idx += 1
+        case "-u", "--unlock":
+            config.isLocked = false
+            idx += 1
+        case "-x":
+            if idx + 1 < args.count, let val = Double(args[idx + 1]) {
+                config.x = CGFloat(val)
+                idx += 2
+            } else {
+                print("Error: Missing or invalid value for -x")
+                exit(1)
+            }
+        case "-y":
+            if idx + 1 < args.count, let val = Double(args[idx + 1]) {
+                config.y = CGFloat(val)
+                idx += 2
+            } else {
+                print("Error: Missing or invalid value for -y")
+                exit(1)
+            }
+        case "-w", "--width":
+            if idx + 1 < args.count, let val = Double(args[idx + 1]), val > 0 {
+                config.width = CGFloat(val)
+                idx += 2
+            } else {
+                print("Error: Missing or invalid value for --width")
+                exit(1)
+            }
+        case "--reset":
+            config.shouldReset = true
+            idx += 1
+        default:
+            if !arg.hasPrefix("-") {
+                config.imagePath = arg
+                idx += 1
+            } else {
+                print("Error: Unknown argument \(arg)")
+                printHelp()
+                exit(1)
+            }
+        }
+    }
+    return config
+}
+
+var globalConfig = parseArguments()
+
 class DragImageView: NSImageView {
     weak var windowRef: NSWindow?
     
@@ -32,25 +141,21 @@ class DragImageView: NSImageView {
     }
     
     override var mouseDownCanMoveWindow: Bool {
-        // Only allow moving window directly if not locked
         return !isLocked
     }
     
-    // Crucial: Override hitTest to pass clicks through the window when locked,
-    // UNLESS the Command (Cmd) key is held down.
     override func hitTest(_ point: NSPoint) -> NSView? {
         if isLocked {
             if NSEvent.modifierFlags.contains(.command) {
                 return super.hitTest(point)
             } else {
-                return nil // Click passes through
+                return nil
             }
         } else {
             return super.hitTest(point)
         }
     }
     
-    // Custom window dragging when locked but Command key is held down
     override func mouseDown(with event: NSEvent) {
         if isLocked && event.modifierFlags.contains(.command) {
             windowRef?.performDrag(with: event)
@@ -62,7 +167,6 @@ class DragImageView: NSImageView {
     override func rightMouseDown(with event: NSEvent) {
         let menu = NSMenu()
         
-        // 1. Lock Widget Toggle
         let lockItem = NSMenuItem(title: "Lock Widget (Cmd+Click to unlock/drag)", action: #selector(toggleLock), keyEquivalent: "")
         lockItem.target = self
         lockItem.state = isLocked ? .on : .off
@@ -70,14 +174,12 @@ class DragImageView: NSImageView {
         
         menu.addItem(NSMenuItem.separator())
         
-        // 2. Choose File
         let chooseFileItem = NSMenuItem(title: "Choose Image/GIF...", action: #selector(chooseFile), keyEquivalent: "o")
         chooseFileItem.target = self
         menu.addItem(chooseFileItem)
         
         menu.addItem(NSMenuItem.separator())
         
-        // 3. Window Position Submenu (disabled if locked to avoid level conflicts)
         let levelMenu = NSMenu()
         
         let topItem = NSMenuItem(title: "Always on Top", action: #selector(setLevelTop), keyEquivalent: "")
@@ -108,7 +210,6 @@ class DragImageView: NSImageView {
         levelParent.isEnabled = !isLocked
         menu.addItem(levelParent)
         
-        // 4. Opacity Submenu
         let opacityMenu = NSMenu()
         let opacities = [100, 90, 80, 70, 60, 50, 40, 30, 20]
         for percent in opacities {
@@ -130,7 +231,6 @@ class DragImageView: NSImageView {
         
         menu.addItem(NSMenuItem.separator())
         
-        // 5. Quit
         let quitItem = NSMenuItem(title: "Quit Widget", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -198,15 +298,56 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         
+        // Handle --reset flag
+        if globalConfig.shouldReset {
+            let keys = ["imagePath", "isLocked", "opacity", "windowFrame", "windowLevelRaw"]
+            for key in keys {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+        }
+        
+        // Determine initial frame
         let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 800, height: 600)
-        let windowWidth: CGFloat = 300
-        let windowHeight: CGFloat = 300
-        let rect = NSRect(
-            x: screenFrame.origin.x + (screenFrame.width - windowWidth) / 2,
-            y: screenFrame.origin.y + (screenFrame.height - windowHeight) / 2,
-            width: windowWidth,
-            height: windowHeight
+        let defaultWidth: CGFloat = 300
+        let defaultHeight: CGFloat = 300
+        
+        var rect = NSRect(
+            x: screenFrame.origin.x + (screenFrame.width - defaultWidth) / 2,
+            y: screenFrame.origin.y + (screenFrame.height - defaultHeight) / 2,
+            width: defaultWidth,
+            height: defaultHeight
         )
+        
+        // Load saved frame (unless --reset was requested)
+        if !globalConfig.shouldReset, let frameString = UserDefaults.standard.string(forKey: "windowFrame") {
+            rect = NSRectFromString(frameString)
+        }
+        
+        // Override with command-line coordinates/size if specified
+        if let w = globalConfig.width {
+            rect.size.width = w
+            rect.size.height = w // temporary square aspect ratio, will adjust on load
+        }
+        if let x = globalConfig.x {
+            rect.origin.x = x
+        }
+        if let y = globalConfig.y {
+            rect.origin.y = y
+        }
+        
+        // Validate coordinates are on screen
+        var isOnScreen = false
+        for screen in NSScreen.screens {
+            if screen.frame.intersects(rect) {
+                isOnScreen = true
+                break
+            }
+        }
+        if !isOnScreen {
+            // Fallback to center of screen if coordinates are completely offscreen
+            rect.origin.x = screenFrame.origin.x + (screenFrame.width - rect.width) / 2
+            rect.origin.y = screenFrame.origin.y + (screenFrame.height - rect.height) / 2
+        }
         
         let win = WidgetWindow(contentRect: rect)
         win.delegate = self
@@ -221,42 +362,33 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         win.contentView?.addSubview(view)
         self.imageView = view
         
-        // Restore window frame if saved
-        if let frameString = UserDefaults.standard.string(forKey: "windowFrame") {
-            let frame = NSRectFromString(frameString)
-            var isOnScreen = false
-            for screen in NSScreen.screens {
-                if screen.frame.intersects(frame) {
-                    isOnScreen = true
-                    break
-                }
-            }
-            if isOnScreen {
-                win.setFrame(frame, display: true)
+        // Restore/Set opacity
+        if let cliOpacity = globalConfig.opacity {
+            win.alphaValue = CGFloat(cliOpacity)
+            UserDefaults.standard.set(cliOpacity, forKey: "opacity")
+        } else {
+            let savedOpacity = UserDefaults.standard.double(forKey: "opacity")
+            if savedOpacity > 0 {
+                win.alphaValue = CGFloat(savedOpacity)
             }
         }
         
-        // Restore opacity if saved
-        let savedOpacity = UserDefaults.standard.double(forKey: "opacity")
-        if savedOpacity > 0 {
-            win.alphaValue = CGFloat(savedOpacity)
-        }
-        
-        // Restore lock state if saved
+        // Restore/Set lock state
         let savedLock = UserDefaults.standard.bool(forKey: "isLocked")
+        let targetLock = globalConfig.isLocked ?? savedLock
         
-        // Load image (either command line or saved or panel)
-        let args = CommandLine.arguments
-        if args.count > 1 {
-            let path = args[1]
-            loadImage(from: path)
-            view.isLocked = savedLock // Apply lock state after loading
-        } else if let savedPath = UserDefaults.standard.string(forKey: "imagePath") {
+        // Load image
+        if let cliPath = globalConfig.imagePath {
+            loadImage(from: cliPath)
+            view.isLocked = targetLock
+        } else if let savedPath = UserDefaults.standard.string(forKey: "imagePath"), !globalConfig.shouldReset {
             loadImage(from: savedPath)
-            view.isLocked = savedLock // Apply lock state after loading
+            view.isLocked = targetLock
         } else {
             DispatchQueue.main.async {
                 self.showOpenPanel()
+                // Apply lock state after open panel returns a file
+                view.isLocked = targetLock
             }
         }
     }
@@ -267,8 +399,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             imageView?.image = image
             UserDefaults.standard.set(expandedPath, forKey: "imagePath")
             
-            // Adjust size only if we don't have a saved frame
-            if UserDefaults.standard.string(forKey: "windowFrame") == nil {
+            // Adjust size only if we are not restoring a saved frame
+            if UserDefaults.standard.string(forKey: "windowFrame") == nil || globalConfig.width != nil {
                 adjustWindowSize(for: image)
             }
         } else {
@@ -290,7 +422,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if size.width > 0 && size.height > 0 {
             let aspectRatio = size.width / size.height
             let currentFrame = window.frame
-            let targetWidth: CGFloat = 300
+            let targetWidth = currentFrame.width
             let targetHeight = targetWidth / aspectRatio
             
             window.setFrame(
