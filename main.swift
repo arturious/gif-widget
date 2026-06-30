@@ -128,16 +128,7 @@ class DragImageView: NSImageView {
     
     func updateWindowProperties() {
         guard let window = windowRef else { return }
-        if isLocked {
-            window.level = .desktop
-        } else {
-            let savedLevelRaw = UserDefaults.standard.integer(forKey: "windowLevelRaw")
-            if savedLevelRaw != 0 {
-                window.level = NSWindow.Level(rawValue: savedLevelRaw)
-            } else {
-                window.level = .normal
-            }
-        }
+        window.level = isLocked ? .desktop : .normal
     }
     
     override var mouseDownCanMoveWindow: Bool {
@@ -167,49 +158,22 @@ class DragImageView: NSImageView {
     override func rightMouseDown(with event: NSEvent) {
         let menu = NSMenu()
         
-        let lockItem = NSMenuItem(title: "Lock Widget (Cmd+Click to unlock/drag)", action: #selector(toggleLock), keyEquivalent: "")
+        // 1. Lock / Unlock Toggle
+        let lockItem = NSMenuItem(title: isLocked ? "Unlock" : "Lock", action: #selector(toggleLock), keyEquivalent: "")
         lockItem.target = self
-        lockItem.state = isLocked ? .on : .off
+        if #available(macOS 11.0, *) {
+            lockItem.image = NSImage(systemSymbolName: isLocked ? "lock.open.fill" : "lock.fill", accessibilityDescription: nil)
+        }
         menu.addItem(lockItem)
         
         menu.addItem(NSMenuItem.separator())
         
-        let chooseFileItem = NSMenuItem(title: "Choose Image/GIF...", action: #selector(chooseFile), keyEquivalent: "o")
+        // 2. Choose Image/GIF
+        let chooseFileItem = NSMenuItem(title: "Choose image/GIF...", action: #selector(chooseFile), keyEquivalent: "o")
         chooseFileItem.target = self
         menu.addItem(chooseFileItem)
         
-        menu.addItem(NSMenuItem.separator())
-        
-        let levelMenu = NSMenu()
-        
-        let topItem = NSMenuItem(title: "Always on Top", action: #selector(setLevelTop), keyEquivalent: "")
-        topItem.target = self
-        
-        let normalItem = NSMenuItem(title: "Normal Window", action: #selector(setLevelNormal), keyEquivalent: "")
-        normalItem.target = self
-        
-        let desktopItem = NSMenuItem(title: "Below Windows (Desktop)", action: #selector(setLevelDesktopSelf), keyEquivalent: "")
-        desktopItem.target = self
-        
-        if let level = windowRef?.level {
-            if level == .floating {
-                topItem.state = .on
-            } else if level == .normal {
-                normalItem.state = .on
-            } else if level == .desktop {
-                desktopItem.state = .on
-            }
-        }
-        
-        levelMenu.addItem(topItem)
-        levelMenu.addItem(normalItem)
-        levelMenu.addItem(desktopItem)
-        
-        let levelParent = NSMenuItem(title: "Window Position", action: nil, keyEquivalent: "")
-        levelParent.submenu = levelMenu
-        levelParent.isEnabled = !isLocked
-        menu.addItem(levelParent)
-        
+        // 3. Opacity Submenu
         let opacityMenu = NSMenu()
         let opacities = [100, 90, 80, 70, 60, 50, 40, 30, 20]
         for percent in opacities {
@@ -231,7 +195,8 @@ class DragImageView: NSImageView {
         
         menu.addItem(NSMenuItem.separator())
         
-        let quitItem = NSMenuItem(title: "Quit Widget", action: #selector(quitApp), keyEquivalent: "q")
+        // 4. Quit
+        let quitItem = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
         
@@ -246,21 +211,6 @@ class DragImageView: NSImageView {
         if let appDelegate = NSApp.delegate as? AppDelegate {
             appDelegate.showOpenPanel()
         }
-    }
-    
-    @objc func setLevelTop() {
-        windowRef?.level = .floating
-        UserDefaults.standard.set(NSWindow.Level.floating.rawValue, forKey: "windowLevelRaw")
-    }
-    
-    @objc func setLevelNormal() {
-        windowRef?.level = .normal
-        UserDefaults.standard.set(NSWindow.Level.normal.rawValue, forKey: "windowLevelRaw")
-    }
-    
-    @objc func setLevelDesktopSelf() {
-        windowRef?.level = .desktop
-        UserDefaults.standard.set(NSWindow.Level.desktop.rawValue, forKey: "windowLevelRaw")
     }
     
     @objc func setOpacity(_ sender: NSMenuItem) {
