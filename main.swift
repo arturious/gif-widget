@@ -173,7 +173,36 @@ class DragImageView: NSImageView {
         chooseFileItem.target = self
         menu.addItem(chooseFileItem)
         
-        // 3. Opacity Submenu
+        // 3. Size Submenu (Increase/Decrease/Reset)
+        let sizeMenu = NSMenu()
+        
+        let increaseItem = NSMenuItem(title: "Increase (+)", action: #selector(increaseSize), keyEquivalent: "=")
+        increaseItem.keyEquivalentModifierMask = .command
+        increaseItem.target = self
+        
+        let decreaseItem = NSMenuItem(title: "Decrease (-)", action: #selector(decreaseSize), keyEquivalent: "-")
+        decreaseItem.keyEquivalentModifierMask = .command
+        decreaseItem.target = self
+        
+        let resetSizeItem = NSMenuItem(title: "Reset Size", action: #selector(resetSize), keyEquivalent: "0")
+        resetSizeItem.keyEquivalentModifierMask = .command
+        resetSizeItem.target = self
+        
+        if #available(macOS 11.0, *) {
+            increaseItem.image = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)
+            decreaseItem.image = NSImage(systemSymbolName: "minus", accessibilityDescription: nil)
+            resetSizeItem.image = NSImage(systemSymbolName: "arrow.counterclockwise", accessibilityDescription: nil)
+        }
+        
+        sizeMenu.addItem(increaseItem)
+        sizeMenu.addItem(decreaseItem)
+        sizeMenu.addItem(resetSizeItem)
+        
+        let sizeParent = NSMenuItem(title: "Size", action: nil, keyEquivalent: "")
+        sizeParent.submenu = sizeMenu
+        menu.addItem(sizeParent)
+        
+        // 4. Opacity Submenu
         let opacityMenu = NSMenu()
         let opacities = [100, 90, 80, 70, 60, 50, 40, 30, 20]
         for percent in opacities {
@@ -195,7 +224,7 @@ class DragImageView: NSImageView {
         
         menu.addItem(NSMenuItem.separator())
         
-        // 4. Quit
+        // 5. Quit
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -210,6 +239,65 @@ class DragImageView: NSImageView {
     @objc func chooseFile() {
         if let appDelegate = NSApp.delegate as? AppDelegate {
             appDelegate.showOpenPanel()
+        }
+    }
+    
+    @objc func increaseSize() {
+        guard let window = windowRef else { return }
+        let currentFrame = window.frame
+        let newWidth = currentFrame.width * 1.1
+        let newHeight = currentFrame.height * 1.1
+        
+        let dx = (currentFrame.width - newWidth) / 2
+        let dy = (currentFrame.height - newHeight) / 2
+        
+        let newFrame = NSRect(
+            x: currentFrame.origin.x + dx,
+            y: currentFrame.origin.y + dy,
+            width: newWidth,
+            height: newHeight
+        )
+        window.setFrame(newFrame, display: true, animate: true)
+    }
+    
+    @objc func decreaseSize() {
+        guard let window = windowRef else { return }
+        let currentFrame = window.frame
+        let newWidth = max(50, currentFrame.width * 0.9)
+        let newHeight = max(50, currentFrame.height * 0.9)
+        
+        let dx = (currentFrame.width - newWidth) / 2
+        let dy = (currentFrame.height - newHeight) / 2
+        
+        let newFrame = NSRect(
+            x: currentFrame.origin.x + dx,
+            y: currentFrame.origin.y + dy,
+            width: newWidth,
+            height: newHeight
+        )
+        window.setFrame(newFrame, display: true, animate: true)
+    }
+    
+    @objc func resetSize() {
+        guard let image = self.image else { return }
+        let size = image.size
+        if size.width > 0 && size.height > 0 {
+            let aspectRatio = size.width / size.height
+            guard let window = windowRef else { return }
+            let currentFrame = window.frame
+            let targetWidth: CGFloat = 300
+            let targetHeight = targetWidth / aspectRatio
+            
+            let dx = (currentFrame.width - targetWidth) / 2
+            let dy = (currentFrame.height - targetHeight) / 2
+            
+            let newFrame = NSRect(
+                x: currentFrame.origin.x + dx,
+                y: currentFrame.origin.y + dy,
+                width: targetWidth,
+                height: targetHeight
+            )
+            window.setFrame(newFrame, display: true, animate: true)
         }
     }
     
