@@ -44,7 +44,8 @@ func printHelp() {
       --reset              Clear saved settings and start fresh
     
     Managing Locked Widget:
-      Locked widgets sit behind desktop icons. Manage them using the menu bar icon (status item).
+      Hold Command (Cmd / ⌘) to temporarily raise locked widgets above desktop icons
+      for dragging or right-clicking. Or use the Menu Bar menu.
     """)
 }
 
@@ -151,11 +152,21 @@ class DragImageView: NSImageView {
     
     override func hitTest(_ point: NSPoint) -> NSView? {
         if isLocked {
-            // When locked, it sits behind Finder icons. We don't intercept any clicks at all,
-            // letting them pass cleanly to the desktop icons.
-            return nil
+            if NSEvent.modifierFlags.contains(.command) {
+                return super.hitTest(point)
+            } else {
+                return nil
+            }
         } else {
             return super.hitTest(point)
+        }
+    }
+    
+    override func mouseDown(with event: NSEvent) {
+        if isLocked && event.modifierFlags.contains(.command) {
+            windowRef?.performDrag(with: event)
+        } else {
+            super.mouseDown(with: event)
         }
     }
     
@@ -370,6 +381,7 @@ class WidgetWindow: NSWindow {
 class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var widgetWindows: [String: WidgetWindow] = [:]
     var statusItem: NSStatusItem?
+    var modifierTimer: Timer?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -387,6 +399,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         
         setupMenuBar()
+        startModifierTimer()
         
         // Load all active widgets
         let activeIds = UserDefaults.standard.stringArray(forKey: "activeWidgetIDs") ?? ["default"]
@@ -404,6 +417,35 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 button.image = NSImage(systemSymbolName: "photo.on.rectangle.angled", accessibilityDescription: "gifwidget")
             } else {
                 button.title = "🖼️"
+            }
+        }
+    }
+    
+    func startModifierTimer() {
+        modifierTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+            self?.checkModifierFlags()
+        }
+        RunLoop.main.add(modifierTimer!, forMode: .common)
+    }
+    
+    func checkModifierFlags() {
+        let flags = CGEventSource.flagsState(.combinedSessionState)
+        let isCmdPressed = flags.contains(.maskCommand)
+        let isMouseDown = NSEvent.pressedMouseButtons != 0
+        let isAppActive = NSApp.isActive
+        
+        let shouldBeRaised = isCmdPressed || isMouseDown || isAppActive
+        let targetLevel = shouldBeRaised ? NSWindow.Level(rawValue: NSWindow.Level.normal.rawValue - 1) : .desktop
+        
+        for (_, win) in widgetWindows {
+            guard let view = win.contentView?.subviews.first(where: { $0 is DragImageView }) as? DragImageView else {
+                continue
+            }
+            
+            if view.isLocked {
+                if win.level != targetLevel {
+                    win.level = targetLevel
+                }
             }
         }
     }
